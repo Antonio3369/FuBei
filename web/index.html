@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>付呗交易看板</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="side">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">付</span>
+        <span class="brand-text">
+          <strong>交易看板</strong>
+          <p>付呗设备</p>
+        </span>
+      </div>
+      <nav id="nav" aria-label="看板导航"></nav>
+      <div class="side-foot">
+        <label class="file-btn">导入总表
+          <input id="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+        </label>
+        <button id="export" type="button">导出当前列表</button>
+      </div>
+    </aside>
+    <div class="main">
+      <header class="bar">
+        <div class="bar-title">
+          <button id="back" type="button" hidden>返回</button>
+          <p id="crumb" class="crumb">付呗交易看板</p>
+          <h1 id="title">工作台</h1>
+        </div>
+        <div class="bar-actions">
+          <button id="import-proxy" type="button">导入</button>
+          <button id="export-proxy" type="button">导出</button>
+        </div>
+        <button id="scope-summary" class="scope-toggle" type="button" aria-expanded="false">筛选范围</button>
+        <div class="scope" id="scope">
+          <select id="company" aria-label="公司"></select>
+          <select id="manager" aria-label="经理"></select>
+          <select id="sales" aria-label="业务员"></select>
+          <button id="clear" type="button">看全部</button>
+        </div>
+      </header>
+      <div id="error" class="banner error" hidden></div>
+      <div id="diff" class="banner diff" hidden></div>
+      <div id="view"></div>
+    </div>
+  </div>
+  <div id="drop" hidden>松开后导入这份总表</div>
+  <script src="/app.js"></script>
+</body>
+</html>
