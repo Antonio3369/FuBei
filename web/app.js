@@ -54,9 +54,36 @@ const state = {
 };
 
 let DATA = { meta: {}, rows: [], diff: null, history: [] };
+let ACCOUNT = null;
+let DIRECTORY = { managers: [], sales: [] };
 const trail = [];
 let restoring = false;
 const $ = (id) => document.getElementById(id);
+
+function isOrg() {
+  return !ACCOUNT || ACCOUNT.role === "org";
+}
+
+function isManagerAccount() {
+  return ACCOUNT && ACCOUNT.role === "manager";
+}
+
+function isSalesAccount() {
+  return ACCOUNT && ACCOUNT.role === "sales";
+}
+
+function applyAccountScope() {
+  if (isManagerAccount()) state.manager = ACCOUNT.name;
+  if (isSalesAccount()) {
+    if (ACCOUNT.manager) state.manager = ACCOUNT.manager;
+    state.sales = ACCOUNT.name;
+  }
+}
+
+function visibleViews() {
+  if (isOrg()) return VIEWS;
+  return VIEWS.filter((item) => item.id !== "team");
+}
 
 function place() {
   return {
@@ -91,7 +118,10 @@ function remember() {
 }
 
 function atRoot() {
-  return state.view === "workbench" && !state.q && !state.company && !state.manager && !state.sales;
+  if (state.view !== "workbench" || state.q) return false;
+  if (isSalesAccount()) return true;
+  if (isManagerAccount()) return !state.sales;
+  return !state.company && !state.manager && !state.sales;
 }
 
 function captureInsightScope() {
@@ -125,11 +155,11 @@ function goBack() {
   if (state.view !== "workbench") {
     state.view = "workbench";
     state.insight = "opened";
-  } else if (state.sales) {
+  } else if (state.sales && !isSalesAccount()) {
     state.sales = "";
-  } else if (state.manager) {
+  } else if (state.manager && isOrg()) {
     state.manager = "";
-  } else if (state.company) {
+  } else if (state.company && isOrg()) {
     state.company = "";
   }
   $("scope").classList.remove("open");
@@ -540,7 +570,7 @@ function fillSelect(id, values, current, placeholder) {
 }
 
 function renderChrome() {
-  $("nav").innerHTML = VIEWS.map((item) => `
+  $("nav").innerHTML = visibleViews().map((item) => `
     <button type="button" class="nav-btn ${state.view === item.id ? "active" : ""}" data-view="${item.id}">
       ${item.label}
     </button>
@@ -568,6 +598,9 @@ function renderChrome() {
   const brandLine = document.querySelector(".brand-text p");
   if (brandLine) brandLine.textContent = (DATA.meta && DATA.meta.product) || "付呗设备";
   $("diff").hidden = true;
+  document.body.classList.toggle("role-org", isOrg());
+  document.body.classList.toggle("role-manager", isManagerAccount());
+  document.body.classList.toggle("role-sales", isSalesAccount());
 }
 
 function queueRows(rows, id) {
@@ -1136,6 +1169,8 @@ async function upload(file) {
 }
 
 function render() {
+  applyAccountScope();
+  if (!isOrg() && state.view === "team") state.view = "workbench";
   remember();
   renderView();
 }
@@ -1143,6 +1178,7 @@ function render() {
 document.addEventListener("click", (event) => {
   const view = event.target.closest("[data-view]");
   if (view) {
+    if (view.dataset.view === "team" && !isOrg()) return;
     const enteringAlerts = view.dataset.view === "alerts" && state.view !== "alerts";
     if (enteringAlerts) captureInsightScope();
     state.view = view.dataset.view;
@@ -1183,7 +1219,9 @@ document.addEventListener("click", (event) => {
   }
   const roll = event.target.closest("[data-roll-key]");
   if (roll) {
+    if (isSalesAccount()) return;
     const key = roll.dataset.rollKey;
+    if (isManagerAccount() && key === "manager") return;
     state[key] = roll.dataset.rollName || "未填写";
     if (key === "company") {
       state.manager = "";
@@ -1198,6 +1236,8 @@ document.addEventListener("click", (event) => {
   }
   const filter = event.target.closest("[data-filter]");
   if (filter) {
+    if (isSalesAccount()) return;
+    if (isManagerAccount() && filter.dataset.filter !== "sales") return;
     state[filter.dataset.filter] = filter.dataset.value;
     if (filter.dataset.filter === "manager") state.sales = "";
     if (filter.dataset.filter === "company") {
@@ -1211,7 +1251,9 @@ document.addEventListener("click", (event) => {
   }
   const team = event.target.closest("[data-team-key]");
   if (team) {
+    if (isSalesAccount()) return;
     const key = team.dataset.teamKey;
+    if (isManagerAccount() && key !== "sales") return;
     const name = team.dataset.teamName === "未填写" ? "" : team.dataset.teamName;
     if (key === "company") {
       state.company = name;
@@ -1263,6 +1305,7 @@ document.addEventListener("click", (event) => {
 
 ["company", "manager", "sales"].forEach((id) => {
   $(id).addEventListener("change", (event) => {
+    if (!isOrg()) return;
     state[id] = event.target.value;
     if (id === "company") {
       state.manager = "";
@@ -1276,6 +1319,7 @@ document.addEventListener("click", (event) => {
 });
 
 $("clear").addEventListener("click", () => {
+  if (!isOrg()) return;
   state.company = "";
   state.manager = "";
   state.sales = "";
@@ -1288,7 +1332,10 @@ $("clear").addEventListener("click", () => {
 $("back").addEventListener("click", goBack);
 $("export").addEventListener("click", exportCsv);
 $("export-proxy").addEventListener("click", exportCsv);
-$("import-proxy").addEventListener("click", () => $("file").click());
+$("import-proxy").addEventListener("click", () => {
+  if (!isOrg()) return;
+  $("file").click();
+});
 $("scope-summary").addEventListener("click", () => {
   const open = $("scope").classList.toggle("open");
   $("scope-summary").setAttribute("aria-expanded", open ? "true" : "false");
@@ -1301,6 +1348,7 @@ $("file").addEventListener("change", (event) => {
 const drop = $("drop");
 window.addEventListener("dragover", (event) => {
   event.preventDefault();
+  if (!isOrg()) return;
   drop.hidden = false;
 });
 window.addEventListener("dragleave", (event) => {
@@ -1309,17 +1357,110 @@ window.addEventListener("dragleave", (event) => {
 window.addEventListener("drop", (event) => {
   event.preventDefault();
   drop.hidden = true;
+  if (!isOrg()) return;
   const file = event.dataTransfer.files[0];
   if (file) upload(file);
 });
 
-fetch("/api/data")
-  .then((response) => response.json())
-  .then((payload) => {
-    DATA = payload;
-    render();
-  })
-  .catch(() => {
+function showLogin(message) {
+  ACCOUNT = null;
+  document.body.classList.add("login-open");
+  $("login").hidden = false;
+  if (message) {
+    $("login-error").hidden = false;
+    $("login-error").textContent = message;
+  } else {
+    $("login-error").hidden = true;
+  }
+  fillLoginNames();
+}
+
+function hideLogin() {
+  document.body.classList.remove("login-open");
+  $("login").hidden = true;
+  $("login-error").hidden = true;
+}
+
+function fillLoginNames() {
+  const role = document.querySelector("input[name=role]:checked")?.value || "org";
+  $("login-name-wrap").hidden = false;
+  $("login-name-label").textContent = role === "org" ? "账号" : "姓名";
+}
+
+async function loadBoard() {
+  const response = await fetch("/api/data");
+  if (response.status === 401) {
+    showLogin();
+    return;
+  }
+  if (!response.ok) throw new Error("data");
+  DATA = await response.json();
+  ACCOUNT = DATA.meta && DATA.meta.account ? DATA.meta.account : { role: "org", name: "机构", manager: "" };
+  applyAccountScope();
+  hideLogin();
+  render();
+}
+
+async function boot() {
+  try {
+    const directory = await fetch("/api/directory").then((item) => item.json());
+    DIRECTORY = directory;
+    fillLoginNames();
+    const session = await fetch("/api/session").then((item) => item.json());
+    if (!session.account) {
+      showLogin();
+      return;
+    }
+    await loadBoard();
+  } catch (error) {
     $("error").hidden = false;
     $("error").textContent = "没有连上本地服务。在项目目录运行 python3 server.py";
+  }
+}
+
+document.querySelectorAll("input[name=role]").forEach((input) => {
+  input.addEventListener("change", fillLoginNames);
+});
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const role = document.querySelector("input[name=role]:checked")?.value;
+  const body = {
+    role,
+    name: $("login-name").value.trim(),
+    manager: "",
+    pin: $("login-pin").value,
+  };
+  $("login-error").hidden = true;
+  const response = await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
+  const payload = await response.json();
+  if (!response.ok) {
+    $("login-error").hidden = false;
+    $("login-error").textContent = payload.error || "进不去。";
+    return;
+  }
+  $("login-pin").value = "";
+  await loadBoard();
+});
+
+async function logout() {
+  await fetch("/api/logout", { method: "POST" });
+  DATA = { meta: {}, rows: [], diff: null, history: [] };
+  ACCOUNT = null;
+  state.view = "workbench";
+  state.insight = "opened";
+  state.q = "";
+  state.company = "";
+  state.manager = "";
+  state.sales = "";
+  showLogin();
+}
+
+$("logout").addEventListener("click", logout);
+$("logout-proxy").addEventListener("click", logout);
+
+boot();

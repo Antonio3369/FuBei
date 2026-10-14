@@ -10,6 +10,29 @@
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="login-card">
+      <p class="login-mark">付</p>
+      <h1>进入看板</h1>
+      <p class="login-note">授理商、市场经理看到的就是现在这一层工作台。机构看全部。</p>
+      <div class="login-roles" role="radiogroup" aria-label="身份">
+        <label><input type="radio" name="role" value="org" checked>机构</label>
+        <label><input type="radio" name="role" value="manager">授理商</label>
+        <label><input type="radio" name="role" value="sales">市场经理</label>
+      </div>
+      <label id="login-name-wrap">
+        <span id="login-name-label">账号</span>
+        <input id="login-name" type="text" autocomplete="username" spellcheck="false">
+      </label>
+      <label>
+        口令
+        <input id="login-pin" type="password" autocomplete="current-password">
+      </label>
+      <p id="login-error" class="login-error" hidden></p>
+      <button type="submit">进入</button>
+      <p class="login-hint">初始口令都是 123456。</p>
+    </form>
+  </div>
   <div class="shell">
     <aside class="side">
       <div class="brand">
@@ -25,6 +48,7 @@
           <input id="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
         </label>
         <button id="export" type="button">导出当前列表</button>
+        <button id="logout" type="button">退出</button>
       </div>
     </aside>
     <div class="main">
@@ -37,6 +61,7 @@
         <div class="bar-actions">
           <button id="import-proxy" type="button">导入</button>
           <button id="export-proxy" type="button">导出</button>
+          <button id="logout-proxy" type="button">退出</button>
         </div>
         <button id="scope-summary" class="scope-toggle" type="button" aria-expanded="false">筛选范围</button>
         <div class="scope" id="scope">

@@ -4,3 +4,4 @@ __pycache__/
 data/*.xlsx
 data/uploads/
 data/snapshots/
+data/accounts.json

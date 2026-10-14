@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import sys
+import threading
 import webbrowser
 from datetime import date, datetime, time
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -18,6 +21,11 @@ DATA = ROOT / "data"
 SNAPSHOTS = DATA / "snapshots"
 UPLOADS = DATA / "uploads"
 SEED = Path("/Users/xin/Desktop/付呗/碰一下音响商户交易数据统计10.11.xlsx")
+ACCOUNTS = DATA / "accounts.json"
+SESSIONS = {}
+SESSION_LOCK = threading.Lock()
+ORG_PIN = "123456"
+ORG_USER = "admin"
 
 def num(value) -> float:
     if isinstance(value, bool) or value is None or value == "":
@@ -355,7 +363,163 @@ def load_current():
     # Peek date from an existing snapshot of the same file only after parse.
     payload = build_from_xlsx(path)
     save_snapshot(payload)
+    ensure_accounts(payload)
     return payload
+
+
+def default_pin(name: str) -> str:
+    return ORG_PIN
+
+
+def directory_of(payload):
+    managers = sorted({row.get("manager") or "" for row in payload["rows"] if row.get("manager")})
+    sales_map = {}
+    for row in payload["rows"]:
+        name = row.get("sales") or ""
+        if not name:
+            continue
+        item = sales_map.get(name) or {"name": name, "managers": set()}
+        if row.get("manager"):
+            item["managers"].add(row["manager"])
+        sales_map[name] = item
+    sales = [
+        {"name": item["name"], "manager": sorted(item["managers"])[0] if item["managers"] else ""}
+        for item in sales_map.values()
+    ]
+    sales.sort(key=lambda item: item["name"])
+    return {"managers": managers, "sales": sales}
+
+
+def load_accounts():
+    if ACCOUNTS.exists():
+        try:
+            data = json.loads(ACCOUNTS.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "pins" in data:
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"org_pin": ORG_PIN, "pins": {}}
+
+
+def save_accounts(accounts):
+    DATA.mkdir(parents=True, exist_ok=True)
+    ACCOUNTS.write_text(json.dumps(accounts, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def ensure_accounts(payload):
+    accounts = load_accounts()
+    pins = accounts.setdefault("pins", {})
+    accounts.setdefault("org_pin", ORG_PIN)
+    directory = directory_of(payload)
+    changed = False
+    for name in directory["managers"]:
+        key = f"manager:{name}"
+        if key not in pins:
+            pins[key] = default_pin(name)
+            changed = True
+    for item in directory["sales"]:
+        key = f"sales:{item['name']}"
+        if key not in pins:
+            pins[key] = default_pin(item["name"])
+            changed = True
+    if changed:
+        save_accounts(accounts)
+    return accounts
+
+
+def pin_of(accounts, role, name):
+    if role == "org":
+        return str(accounts.get("org_pin") or ORG_PIN)
+    return str(accounts.get("pins", {}).get(f"{role}:{name}") or "")
+
+
+def account_from_login(payload, role, name, manager, pin):
+    accounts = ensure_accounts(payload)
+    expected = pin_of(accounts, role, name if role != "org" else "")
+    if not expected or pin != expected:
+        return None
+    if role == "org":
+        if name.strip().lower() != ORG_USER:
+            return None
+        return {"role": "org", "name": "机构", "manager": ""}
+    directory = directory_of(payload)
+    if role == "manager":
+        if name not in directory["managers"]:
+            return None
+        return {"role": "manager", "name": name, "manager": ""}
+    match = next((item for item in directory["sales"] if item["name"] == name), None)
+    if not match:
+        return None
+    attached = manager or match["manager"]
+    return {"role": "sales", "name": name, "manager": attached}
+
+
+def session_account(handler):
+    cookie = SimpleCookie()
+    cookie.load(handler.headers.get("Cookie", ""))
+    morsel = cookie.get("fubei")
+    if not morsel:
+        return None
+    with SESSION_LOCK:
+        return SESSIONS.get(morsel.value)
+
+
+def set_session(handler, account):
+    token = secrets.token_urlsafe(24)
+    with SESSION_LOCK:
+        SESSIONS[token] = account
+    handler.send_header("Set-Cookie", f"fubei={token}; Path=/; HttpOnly; SameSite=Lax")
+
+
+def clear_session(handler):
+    cookie = SimpleCookie()
+    cookie.load(handler.headers.get("Cookie", ""))
+    morsel = cookie.get("fubei")
+    if morsel:
+        with SESSION_LOCK:
+            SESSIONS.pop(morsel.value, None)
+    handler.send_header("Set-Cookie", "fubei=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+
+
+def row_in_account(row, account):
+    if not account or account["role"] == "org":
+        return True
+    if account["role"] == "manager":
+        return (row.get("manager") or "") == account["name"]
+    if account.get("manager") and (row.get("manager") or "") != account["manager"]:
+        return False
+    return (row.get("sales") or "") == account["name"]
+
+
+def scoped_payload(payload, account):
+    rows = [row for row in payload.get("rows") or [] if row_in_account(row, account)]
+    history = []
+    for snap in payload.get("history") or []:
+        if not snap:
+            continue
+        history.append({**snap, "rows": [row for row in snap.get("rows") or [] if row_in_account(row, account)]})
+    previous = history[-1] if history else None
+    meta = dict(payload.get("meta") or {})
+    meta["account"] = account
+    return {
+        "meta": meta,
+        "rows": rows,
+        "history": history,
+        "previous": previous,
+        "diff": snapshot_diff(previous, rows) if previous else None,
+    }
+
+
+def read_json_body(handler):
+    length = int(handler.headers.get("Content-Length", "0") or 0)
+    if length <= 0 or length > 1024 * 1024:
+        return {}
+    raw = handler.rfile.read(length)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def parse_upload(body: bytes, content_type: str):
@@ -414,8 +578,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/api/session":
+            account = session_account(self)
+            self.send_json({"account": account})
+            return
+        if path == "/api/directory":
+            self.send_json(directory_of(Handler.payload))
+            return
         if path == "/api/data":
-            self.send_json(Handler.payload)
+            account = session_account(self)
+            if not account:
+                self.send_json({"error": "请先进入。"}, 401)
+                return
+            self.send_json(scoped_payload(Handler.payload, account))
             return
         if path in ("/", "/index.html"):
             self.send_file(WEB / "index.html", "text/html; charset=utf-8")
@@ -430,8 +605,44 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/login":
+            body = read_json_body(self)
+            role = str(body.get("role") or "")
+            name = str(body.get("name") or "").strip()
+            manager = str(body.get("manager") or "").strip()
+            pin = str(body.get("pin") or "")
+            if role not in ("org", "manager", "sales"):
+                self.send_json({"error": "请选择身份。"}, 400)
+                return
+            account = account_from_login(Handler.payload, role, name, manager, pin)
+            if not account:
+                self.send_json({"error": "名字或口令不对。"}, 401)
+                return
+            raw = json.dumps({"account": account}, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            set_session(self, account)
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        if path == "/api/logout":
+            raw = json.dumps({"ok": True}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            clear_session(self)
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if path != "/api/upload":
             self.send_error(404)
+            return
+        account = session_account(self)
+        if not account or account["role"] != "org":
+            self.send_json({"error": "只有机构可以导入总表。"}, 403)
             return
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0 or length > 30 * 1024 * 1024:
@@ -447,8 +658,9 @@ class Handler(BaseHTTPRequestHandler):
             (UPLOADS / filename).write_bytes(content)
             payload = build_from_xlsx(saved)
             save_snapshot(payload)
+            ensure_accounts(payload)
             Handler.payload = payload
-            self.send_json(payload)
+            self.send_json(scoped_payload(payload, account))
         except Exception as exc:  # noqa: BLE001 - return the parse error to the page
             self.send_json({"error": str(exc)}, 400)
 
